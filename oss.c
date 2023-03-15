@@ -156,7 +156,7 @@ int main(int argc, char* argv[]) {
 
   // Initialize variables to hold command line options
   int proc = 1, simul = 1, limit = 5;
-  char* outputFile;
+  char* outputFile = "output.txt";
 
   // set occupied values in process control block array to false
   int i;
@@ -178,7 +178,7 @@ int main(int argc, char* argv[]) {
       limit = atoi(optarg);
       break;
     case 'h':
-      printf("Usage: oss [-h] [-n proc] [-s simul] [-t iter]\n");
+      printf("Usage: oss [-h] [-n proc] [-s simul] [-t timelimit] [-f outputFile]\n");
       printf("\t-h (optional) shows a help message\n");
       printf("\t-n (optional) is the total number of child processes to create\n");
       printf("\t-s (optional) is the maximum number of concurrent child processes\n");
