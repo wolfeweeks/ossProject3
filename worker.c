@@ -1,7 +1,7 @@
 /**
  * @file worker.c
  * @author Wolfe Weeks
- * @date 2023-02-28
+ * @date 2023-03-14
  */
 
 #include <stdio.h>
@@ -10,8 +10,18 @@
 #include <stdbool.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/msg.h>
+#include <sys/ipc.h>
 
 #include "shared_memory.h"
+
+#define PERMS 0644
+
+struct MessageBuffer {
+  long mtype;
+  int durationSec;
+  int durationNano;
+};
 
 int* block; //shared memory block
 
@@ -50,14 +60,27 @@ int main(int argc, char* argv[]) {
     exit(-1);
   }
 
-  // check if command line arguments are passed
-  if (argc != 3) {
-    printf("Error: missing command line argument for time limit\n");
-    return 1;
+  struct MessageBuffer buf;
+  buf.mtype = 1;
+  int msqid;
+  key_t key;
+
+  if ((key = ftok("README.txt", 1)) == -1) {
+    perror("child ftok");
+    exit(1);
   }
 
-  // convert command line arguments to integers
-  int limit[] = { atoi(argv[1]) , atoi(argv[2]) };
+  if ((msqid = msgget(key, PERMS | IPC_CREAT)) == -1) { /* connect to the queue */
+    perror("child msgget");
+    exit(1);
+  }
+
+  if (msgrcv(msqid, &buf, sizeof(struct MessageBuffer), getpid(), 0) == -1) {
+    perror("failed to receive message from parent\n");
+    exit(1);
+  }
+
+  // printf("\n*******************%d.%d\n\n", buf.durationSec, buf.durationNano);
 
   // attach to the shared memory clock initialized in oss.c
   block = attach_memory_block("README.txt", sizeof(int) * 2);
@@ -70,7 +93,7 @@ int main(int argc, char* argv[]) {
   int clock[2];
   memcpy(clock, block, sizeof(int) * 2);
 
-  int quitTime[2] = { limit[0] + clock[0], limit[1] + clock[1] };
+  int quitTime[2] = { buf.durationSec + clock[0], buf.durationNano + clock[1] };
   if (quitTime[1] >= 1000000000) { //check if nano seconds exceed 1 second
     quitTime[0] += 1;
     quitTime[1] -= 1000000000;

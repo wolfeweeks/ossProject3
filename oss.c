@@ -1,7 +1,7 @@
 /**
  * @file oss.c
  * @author Wolfe Weeks
- * @date 2023-02-28
+ * @date 2023-03-14
  */
 
 #include <stdio.h>
@@ -13,8 +13,12 @@
 #include <time.h>
 #include <sys/time.h>
 #include <signal.h>
+#include <sys/msg.h>
+#include <sys/ipc.h>
 
 #include "shared_memory.h"
+
+#define PERMS 0644
 
 struct PCB {
   int occupied; // either true or false
@@ -23,9 +27,17 @@ struct PCB {
   int startNano; // time when it was forked
 };
 
+struct MessageBuffer {
+  long mtype;
+  int durationSec;
+  int durationNano;
+};
+
 int proc;
 struct PCB processTable[20];
 int* block;
+int msqid;
+FILE* file;
 
 // This function is a signal handler that handles three different signals: SIGPROF, SIGTERM, and SIGINT.
 static void myhandler(int s) {
@@ -44,6 +56,13 @@ static void myhandler(int s) {
     // Destroy the memory block and exit with an error code.
     destroy_memory_block("README.txt");
     detach_memory_block(block);
+
+    // Remove the message queue
+    if (msgctl(msqid, IPC_RMID, NULL) == -1) {
+      perror("msgctl");
+      exit(1);
+    }
+
     exit(-1);
   }
   // If a SIGINT signal is received, terminate all running processes and exit the program.
@@ -61,6 +80,13 @@ static void myhandler(int s) {
     // Destroy the memory block and exit with an error code.
     destroy_memory_block("README.txt");
     detach_memory_block(block);
+
+    // Remove the message queue
+    if (msgctl(msqid, IPC_RMID, NULL) == -1) {
+      perror("msgctl");
+      exit(1);
+    }
+
     exit(-1);
   }
 }
@@ -106,6 +132,16 @@ void printPCBTable(int* clock) {
   for (i = 0; i < 20; i++) {
     printf("|%10s |%10d |%15d |%15d |\n", processTable[i].occupied ? "true" : "false", processTable[i].pid, processTable[i].startSeconds, processTable[i].startNano);
   }
+
+  // Print the same contents to the output file
+  fprintf(file, "OSS PID:%d SysClockS:%d SysClockNano:%d\n", getpid(), clock[0], clock[1]);
+  fprintf(file, "Process Table:\n");
+  fprintf(file, "|%10s |%10s |%15s |%15s |\n", "Occupied", "PID", "Start Seconds", "Start Nano");
+  fprintf(file, "|%10s |%10s |%15s |%15s |\n", "----------", "----------", "---------------", "---------------");
+
+  for (i = 0; i < 20; i++) {
+    fprintf(file, "|%10s |%10d |%15d |%15d |\n", processTable[i].occupied ? "true" : "false", processTable[i].pid, processTable[i].startSeconds, processTable[i].startNano);
+  }
 }
 
 int main(int argc, char* argv[]) {
@@ -120,6 +156,7 @@ int main(int argc, char* argv[]) {
 
   // Initialize variables to hold command line options
   int proc = 1, simul = 1, limit = 5;
+  char* outputFile;
 
   // set occupied values in process control block array to false
   int i;
@@ -129,7 +166,7 @@ int main(int argc, char* argv[]) {
 
   // Use getopt() function to parse command line options
   int opt;
-  while ((opt = getopt(argc, argv, "n:s:t:h")) != -1) {
+  while ((opt = getopt(argc, argv, "n:s:t:f:h")) != -1) {
     switch (opt) {
     case 'n':
       proc = atoi(optarg);
@@ -146,12 +183,19 @@ int main(int argc, char* argv[]) {
       printf("\t-n (optional) is the total number of child processes to create\n");
       printf("\t-s (optional) is the maximum number of concurrent child processes\n");
       printf("\t-t (optional) is the maximum number of seconds each child process should run for\n");
+      printf("\t-f (optional) is the filename to output the PCBs to");
       return 0;
+    case 'f':
+      outputFile = (char*)malloc(strlen(optarg) + 1);
+      strcpy(outputFile, optarg);
+      break;
     default:
       printf("Invalid option\n");
       return 1;
     }
   }
+
+  file = fopen(outputFile, "w+");
 
   // initialize the clock that will be put in shared memory
   int clock[] = { 0, 0 };
@@ -172,6 +216,18 @@ int main(int argc, char* argv[]) {
   int running = 0;
 
   int prevClock[] = { 0, 0 };
+
+  key_t key;
+
+  if ((key = ftok("README.txt", 1)) == -1) {
+    perror("parent ftok");
+    exit(1);
+  }
+
+  if ((msqid = msgget(key, PERMS | IPC_CREAT)) == -1) { /* connect to the queue */
+    perror("parent msgget");
+    exit(1);
+  }
 
   while (1) {
     // Increment the simulated system clock by 500 nanoseconds.
@@ -220,15 +276,19 @@ int main(int argc, char* argv[]) {
           randNano = 0;
         }
 
-        // Convert random seconds and nanoseconds to strings.
-        char secStr[2];
-        char nanoStr[10];
+        struct MessageBuffer buf;
 
-        sprintf(secStr, "%d", randSeconds);
-        sprintf(nanoStr, "%d", randNano);
+        buf.mtype = getpid();
+        buf.durationSec = randSeconds;
+        buf.durationNano = randNano;
+
+        if (msgsnd(msqid, &buf, sizeof(struct MessageBuffer) - sizeof(long), 0) == -1) {
+          printf("msgsnd to %d failed\n", getpid());
+          exit(1);
+        }
 
         // Execute the worker program with the random seconds and nanoseconds as arguments.
-        execl("./worker", "./worker", secStr, nanoStr, NULL);
+        execl("./worker", "./worker", NULL);
       }
       // If this is the parent process.
       else {
@@ -261,6 +321,12 @@ int main(int argc, char* argv[]) {
   }
 
   detach_memory_block(block);
+
+  // Remove the message queue
+  if (msgctl(msqid, IPC_RMID, NULL) == -1) {
+    perror("msgctl");
+    exit(1);
+  }
 
   return 0;
 }
